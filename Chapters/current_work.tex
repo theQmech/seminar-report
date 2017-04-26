@@ -1,0 +1,150 @@
+
+\chapter{Current work in this field}
+
+\section{Ezyang's post summary}
+
+Why should this section be in current work? This is already encompassed in the
+exmaples section. We aren't describing a method to fix leaks over here.
+
+Here we will be talking particularly about the blog post "Anatomy of a thunk 
+leak" by ezyang(replace by aprop references).
+
+\begin{lstlisting}
+main = evaluate (f [1..4000000] (0 :: Int))
+
+f []     c = c
+f (x:xs) c = f xs (c + 1)
+\end{lstlisting}
+Its evident that the $c+1$, cause accumulation of closures and hence leads to
+space leak. What is surprising is that compiling with optimiztions is enough to 
+fix the leak(thanks to GHC). This is due to the fact that the compiler decides 
+to rather use $GHC.Prim.Int\#$ - a primitive version of Int data type which 
+doesn't form any closures.
+
+The following is the core code generated with no optimizations.
+\begin{lstlisting}
+f_aue [Occ=LoopBreaker] :: [Integer] -> Int -> Int
+[LclId, Arity=2, Str=DmdType]
+f_aue =
+ \ (ds_dMW :: [Integer]) (c_atb :: Int) ->
+   case ds_dMW of _ [Occ=Dead] {
+     [] -> c_atb;
+     : x_atc xs_atd ->
+       f_aue
+         xs_atd
+         (+ @ Int
+            GHC.Num.$fNumInt
+            c_atb
+            (fromInteger @ Int GHC.Num.$fNumInt (__integer 1)))
+   };
+\end{lstlisting}
+
+And here is the optimized leak free code using the primitive integer - 
+$GHC.Prim.Int\#$
+
+\begin{lstlisting}
+Main.$wf =
+  \ (w_s2PM :: [Integer]) (ww_s2PQ :: GHC.Prim.Int#) ->
+    case w_s2PM of _ [Occ=Dead] {
+      [] -> ww_s2PQ;
+      : x_auC xs_auD -> Main.$wf xs_auD (GHC.Prim.+# ww_s2PQ 1)
+    }
+\end{lstlisting}
+
+Next, we consider a slightly more complicated example
+
+\begin{lstlisting}
+import Control.Exception.Base
+
+main = do
+    evaluate (f [1..4000000] (0 :: Int, 1 :: Int))
+
+f []     c = c
+f (x:xs) c = f xs (tick x c)
+
+tick x (c0, c1) | even x    = (c0, c1 + 1)
+                | otherwise = (c0 + 1, c1)
+\end{lstlisting}
+
+This piece of code leaks even with optimizations. Unlike in the previous case, 
+using $GHS.Prim.Int\#$ doesn't work because the tuple constructor is still 
+lazily evaluated. The bang pattern(strictness) just enforces evaluation to WHNF
+and not any further.
+
+Insert core language code here, Suresh should be having them(mostly).
+
+insert profiles here\\
+
+% discuss what happens on adding bang to only c in definition of f\\
+Banging the $c$ in the definiton for $f$, simply doesn't plug the leak[caption]
+
+% discuss the standard solutions of banging patterns to c0 and c1\\
+Here is one solution: bang down the $c0$ and $c1$ in definition for $f$.
+Note that this works only with optimizations enabled. This is due to the fact 
+that GHC has unboxed the tuple and inlined the $tick$(see core language code below). 
+
+core language code\\
+
+A complete solution, which works even without optimizations would be to make both $f$ anf $tick$ 
+strict.
+
+insert profiles\\
+
+% Ezyang's post on "Calling all space leaks" also contains a lot of examples. Add them up. \\
+
+\section{Neil Mitchell's blog posts}
+
+Neil Mitchell made the following observation (quoting his blog) - "Every large 
+Haskell program almost inevitably contains space leaks". Over a series of blog 
+posts he has reported a lot of space leaks, how he found them and how he fixed
+them. We present some of them over here.
+
+\begin{lstlisting}
+indexInto :: Eq a => Int -> a -> [a] -> Maybe Int
+indexInto _ _ []                 = Nothing
+indexInto i x (y:ys) | x == y    = Just i
+                     | otherwise = indexInto (i+1) x ys
+\end{lstlisting}
+This peice of returns the index of occurence of an element in a list. This 
+funtion should ideally use $O(1)$ space, however this implementation ends up 
+using space of the order of index of occurence. This is due to the accumulating
+chain of $+1$'s. 
+
+Solution: 
+\begin{lstlisting}
+let j = i + 1 in j `seq` indexInto j x ys
+\end{lstlisting}
+
+
+\begin{lstlisting}
+foldr (\(a,b) (c,d) -> (a+c,b+d)) (0,0) conflictList
+\end{lstlisting}
+Keeping in mind the semantics of $foldr$ in Haskell, its easy to convince 
+yourself that $foldr$ is rather a bad choice and almost always leads to space 
+eaks. However, in this case, even $foldl$ leads to space leaks. Not only that, 
+$foldl'$, the strict version of $foldl$ forces evaluation of only the tuple 
+constructor. Even this implementation is not free of the accumulating addition
+closures.
+
+Solution: 
+\begin{lstlisting}
+foldl' (\(a,b) (c,d) ->
+    let ac = a + c; bd = b + d
+    in ac `seq` bd `seq` (ac,bd))
+    (0,0) conflictList
+\end{lstlisting}
+Or:
+\begin{lstlisting}
+let strict2 f !x !y = f x y
+in foldr (\(a,b) (c,d) -> strict2 (,) (a+b) (b+d)) (0,0) conflictList
+\end{lstlisting}
+
+==> Some monads related optimizations, will come back to this later.
+
+
+
+
+Breifly discuss the space leaks fixed by Neil Mitchell.
+
+Then discuss his proposed trick to fixing leaks with a good example.
+
